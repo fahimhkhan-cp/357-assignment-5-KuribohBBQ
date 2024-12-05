@@ -4,6 +4,24 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <sys/resource.h>
+#include <sys/stat.h>
+#include <errno.h>
+#include <string.h>
+
+//function to check file type
+char file_type(char *name){
+   //will cut off name until it only leaves file type
+   char *dot = strrchr(name, '.');
+   if (dot != NULL){
+       if (strcmp(dot, ".html") == 0)
+            return "text/html";
+   }
+   return "Uknown file type";
+
+}
+
+
+
 void handle_request(int nfd)
 {
    FILE *network = fdopen(nfd, "r");
@@ -11,26 +29,77 @@ void handle_request(int nfd)
    size_t size;
    ssize_t num;
 
+   //error messages
+   char *error404 = "HTTP/1.0 400 Bad Request";
+   char *error500 = "HTTP/1.0 500 Internal Error";
+
    if (network == NULL)
    {
       perror("fdopen");
       close(nfd);
       return;
    }
-
-   while ((num = getline(&line, &size, network)) >= 0)
-   {
-      printf("Message received from client: %s", line);
-      // MODIFICATION: Use write() to send the data back to the client
-      if (write(nfd, line, num) == -1)
-      // MODIFICATION: (Optional) Standard error check
-      {
-         perror("write");
-         break;
-      }
+   char request[100]; //input
+   char type[10]; //GET command
+   char *fname[50]; //file name
+   char protocol[50];
+   printf("Enter command\n");
+   if (fgets(request, sizeof(request), stdin) == NULL){
+      write(nfd, error404, strlen(error404));
+   }
+   //assign values by parsing. If not exactly 3, then it is a bad request
+   if (sscanf(request, "%s %s %s", type, fname, protocol) != 3){
+      write(nfd, error404, strlen(error404));
+      fclose(network);
+   }
+   //remove / from file name
+   if (fname[0] == '/') {
+        memmove(fname, fname + 1, strlen(fname));
    }
 
+   //check if type is GET
+   if (strcmp(type, "GET") != 0){
+      write(nfd, error404, strlen(error404));
+      fclose(network);
+   }
+
+   //open file
+   FILE *file = fopen(fname, "r");
+   //checks if file exists
+   if (file == NULL){
+      write(nfd, error404, strlen(error404));
+      fclose(network);
+   }
+   //build structure for file
+   struct stat finfo;
+   if (stat(fname, &finfo) == -1){
+      perror("Error getting info\n");
+      return 1;
+   }
+   //begin building header
+   char header[300];
+   const char *content_type = get_content_type(fname);
+   snprintf(header, sizeof(header), "HTTP/1.0 200 OK\r\n Content-Type: %s\r\n Content-Length: %ld\r\n \r\n", content_type, finfo.st_size );
+   //write header to client
+   write(nfd, header, strlen(header));
+
+   //get contents of file and then write to client
+   int read;
+   size_t fsize = 0;
+   while ((read = getline(&line, &fsize, fname)) != -1){
+      if (write(nfd, line, fsize) == -1){
+         perror("write");
+      }
+
+   }
    free(line);
+   fclose(file);
+
+
+
+
+
+
    fclose(network);
 }
 
@@ -50,27 +119,8 @@ void run_service(int fd)
 
 
 
-void limit_fork(rlim_t max_procs)
-{
-    struct rlimit rl;
-    if (getrlimit(RLIMIT_NPROC, &rl))
-    {
-        perror("getrlimit");
-        exit(-1);
-    }
-    rl.rlim_cur = max_procs;
-    if (setrlimit(RLIMIT_NPROC, &rl))
-    {
-        perror("setrlimit");
-        exit(-1);
-    }
-}
-
-
 int main(int argc, char* argv[]){
 
-    //limit forks
-    limit_fork(300);
     
 
     //checks if at least one command is given
@@ -94,8 +144,7 @@ int main(int argc, char* argv[]){
         perror(0);
         exit(1);
    }
-   //will be used for forks
-   pid_t p;
+   run_service(fd);
    
 
     return 0;
